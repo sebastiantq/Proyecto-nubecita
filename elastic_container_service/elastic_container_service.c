@@ -20,15 +20,44 @@
 
 #include "../libraries/hostshare.h"
 
+// PThread
+#include <pthread.h>
+
+// Semaphore
+#include <semaphore.h>
+
 #define SHMSZ 27
-#define MAX_HOSTS 2
+#define MAX_HOSTS 10
 #define MAX_CONT 100
 
-int num_containers = 0;
+int num_containers = 0, num_hosts = 0;
 container contenedores[MAX_CONT];
 
 /* name of the shared memory object */
 const char *shared_memory_object = "HOSTS";
+
+// Variables compartidas admin_container y new_connection para pthreads
+int socket_desc_a, c_a;
+struct sockaddr_in server_a, client_a;
+char* server_response;
+
+// Mutex para el server_response
+pthread_mutex_t mutex_server_response = PTHREAD_MUTEX_INITIALIZER;
+
+// Mutex para los new_host
+pthread_mutex_t mutex_new_host = PTHREAD_MUTEX_INITIALIZER;
+
+// Semaforo para el server_response
+sem_t mutex_shared_memory;
+
+// Variables compartidas suscribe_host y new_host para pthreads
+int socket_desc_s, c_s, host_nro = 0;
+struct sockaddr_in server_s, client_s;
+host host_information;
+host host_list[MAX_HOSTS];
+
+void *new_connection(void *ptr); /* threads call this function */
+void *new_host(void *ptr); /* threads call this function */
 
 int send_command(host* info_host, char* command){
   int sock;
@@ -88,8 +117,12 @@ int send_hosts(host host_structure[MAX_HOSTS]){
   /* pointer to shared memory obect */
   host *ptr;
 
+  // sem_wait(&mutex_shared_memory);       /* down semaphore */
+
   fd = shm_open(shared_memory_object, O_CREAT | O_RDWR, 0666);
+
   if (fd == -1) {
+    // sem_post(&mutex_shared_memory);       /* down semaphore */
     perror("open");
     return 10;
   }
@@ -111,6 +144,10 @@ int send_hosts(host host_structure[MAX_HOSTS]){
     printf("Port: %d\n\n", host_structure[i].port);
   }
 
+  // sem_post(&mutex_shared_memory);       /* up semaphore */
+
+  // printf("\nSemaforo levantado shared memory\n");
+
 	return 1;
 }
 
@@ -124,8 +161,14 @@ host* receive_hosts(){
   /* array to receive the data */
   host *data = malloc(SM_SIZE);
 
+  // printf("ANTES\n");
+  // sem_wait(&mutex_shared_memory);       /* down semaphore */
+  // printf("DESPUES\n");
+
   fd = shm_open(shared_memory_object, O_RDONLY, 0666);
+
   if (fd == -1) {
+    // sem_post(&mutex_shared_memory);       /* down semaphore */
     perror("open");
     return data;
   }
@@ -135,6 +178,7 @@ host* receive_hosts(){
 
   ptr = (struct host_struct *) mmap (NULL, SM_SIZE, PROT_READ, MAP_SHARED, fd, 0);
   if (ptr == MAP_FAILED) {
+    // sem_post(&mutex_shared_memory);       /* down semaphore */
     perror("mmap");
     return data;
   }
@@ -149,60 +193,24 @@ host* receive_hosts(){
     printf("Port: %d\n\n", data[i].port);
   }
 
+  // sem_post(&mutex_shared_memory);       /* down semaphore */
+
 	return data;
 }
 
-void suscribe_host(){
-	int socket_desc, client_sock, c, read_size;
-	struct sockaddr_in server, client;
+void *new_host(void *ptr){
+  int active_connection = 1;
+  long conn_client_sock = (long) ptr;
 
-  int host_nro = 0;
-	host host_information;
-  host host_list[MAX_HOSTS];
-
-	int active_connection = 0;
-
-	socket_desc = socket(AF_INET, SOCK_STREAM, 0);
-
-	if(socket_desc == -1){
-		printf("\nError al inicializar el servicio suscribe_host");
-	}
-
-	puts("\nsuscribe_host iniciado");
-
-	server.sin_family = AF_INET;
-	server.sin_addr.s_addr = INADDR_ANY;
-	server.sin_port = htons(477);
-
-	if(bind(socket_desc, (struct sockaddr *) & server, sizeof(server)) < 0){
-		perror("Error al crear el socket");
-		return;
-	}
-
-	puts("Socket iniciado");
-
-	listen(socket_desc, 10);
-
-	char message[512] = "Prueba";
-
-	puts("Esperando por conexiones entrantes...");
-	c = sizeof(struct sockaddr_in);
-
-	client_sock = accept(socket_desc, (struct sockaddr*)&client, (socklen_t*)&c);
-
-	if(client_sock < 0){
-		perror("Error al establecer la conexion");
-		return;
-	}
-
-	active_connection = 1;
 	puts("\nConexion establecida a suscribe_host\n\n");
 
 	while(active_connection && host_nro < MAX_HOSTS){
+    pthread_mutex_lock(&mutex_new_host);
+
 		memset((void*)&host_information, 0, sizeof(struct host_struct));
 
-		if(recv(client_sock, (struct host_struct*)&host_information, sizeof(struct host_struct), 0) > 0){
-			// Recibimos los servidores que se levantan
+		if(recv(conn_client_sock, (struct host_struct*)&host_information, sizeof(struct host_struct), 0) > 0){
+      // Recibimos los servidores que se levantan
       printf("Mensaje de host %d\n\n", host_nro + 1);
       printf("Ip: %s\n", host_information.ip);
       printf("Port: %d\n", host_information.port);
@@ -210,6 +218,8 @@ void suscribe_host(){
 
       host_list[host_nro] = host_information;
       host_nro++;
+
+      pthread_mutex_unlock(&mutex_new_host);
 
       /* remove the shared memory object */
       shm_unlink(shared_memory_object);
@@ -221,17 +231,67 @@ void suscribe_host(){
       	printf("Error al escribir en shared memory (suscribe_host)\n");
       }
 
-			send(client_sock, (struct host_struct*)&host_information, sizeof(host_information), 0);
+			send(conn_client_sock, (struct host_struct*)&host_information, sizeof(host_information), 0);
 		}else{
-    	c = sizeof(struct sockaddr_in);
+    	c_s = sizeof(struct sockaddr_in);
 
-    	client_sock = accept(socket_desc, (struct sockaddr*)&client, (socklen_t*)&c);
+      pthread_mutex_unlock(&mutex_new_host);
+
+      pthread_exit(0);    /* used to terminate a thread */
+
+    	// client_sock_s = accept(socket_desc_s, (struct sockaddr*)&client_s, (socklen_t*)&c_s);
 
 			// active_connection = 0;
 		}
 	}
 
   printf("NUMERO MAXIMO DE HOSTS ALCANZADO\n");
+}
+
+void suscribe_host(){
+  pthread_t tid;  /* the thread identifier */
+
+	int listen_connections = 1;
+  long client_sock_s;
+
+	socket_desc_s = socket(AF_INET, SOCK_STREAM, 0);
+
+	if(socket_desc_s == -1){
+		printf("\nError al inicializar el servicio suscribe_host");
+	}
+
+	puts("\nsuscribe_host iniciado");
+
+	server_s.sin_family = AF_INET;
+	server_s.sin_addr.s_addr = INADDR_ANY;
+	server_s.sin_port = htons(477);
+
+	if(bind(socket_desc_s, (struct sockaddr *)&server_s, sizeof(server_s)) < 0){
+		perror("Error al crear el socket");
+		return;
+	}
+
+	puts("Socket iniciado");
+
+	listen(socket_desc_s, MAX_HOSTS);
+
+	puts("Esperando por conexiones entrantes...");
+	c_s = sizeof(struct sockaddr_in);
+
+	client_sock_s = accept(socket_desc_s, (struct sockaddr*)&client_s, (socklen_t*)&c_s);
+
+  // While para aceptar multiples conexiones
+  while(listen_connections){
+    server_response = "";
+
+    if(client_sock_s < 0){
+      printf("Error al establecer la conexion\n");
+    }else{
+    	pthread_create(&tid, NULL, new_host, (void *)client_sock_s);   /* create the thread */
+    }
+
+    client_sock_s = accept(socket_desc_s, (struct sockaddr *)&client_s, (socklen_t*)&c_s);
+  }
 }
 
 char* create_container(char* name){
@@ -245,17 +305,15 @@ char* create_container(char* name){
   strcpy(command, "-c");
   strcat(command, name);
 
-  for (size_t i = 0; i < MAX_HOSTS; i++) {
-    if(available_hosts[i].cont < available_hosts[min_containers].cont){
-      min_containers = i;
-    }
-  }
+  min_containers = rand() % 2;
 
   // Nos conectamos al host escogido e interactuamos con él
   int r_send = send_command(&available_hosts[min_containers], command);
 
   if(r_send == 1){
     contenedores[num_containers].host = min_containers;
+
+    available_hosts[min_containers].cont++;
 
   	response = "1";
   }else{
@@ -291,6 +349,7 @@ char* stop_container(char* name){
   strcpy(command, "-s");
   strcat(command, name);
 
+  printf("Comparando NOMBRES STOP: \n");
   for (size_t i = 0; i < MAX_CONT; i++) {
     if(!strcmp(contenedores[i].name, name)){
       cont_host = contenedores[i].host;
@@ -324,6 +383,7 @@ char* delete_container(char* name){
   strcpy(command, "-d");
   strcat(command, name);
 
+  printf("Comparando NOMBRES DELETE: \n");
   for (size_t i = 0; i < MAX_CONT; i++) {
     if(!strcmp(contenedores[i].name, name)){
       cont_host = contenedores[i].host;
@@ -346,85 +406,116 @@ char* delete_container(char* name){
 	return response;
 }
 
+void *new_connection(void *ptr){
+  int active_connection = 1, receive;
+  long conn_client_sock = (long)ptr;
+  char client_petition[512], container_name[512];
+
+  printf("\nConexion establecida a admin_container\n");
+
+  while(active_connection){
+    memset(client_petition, 0, 512);
+
+    receive = recv(conn_client_sock, client_petition, 512, 0);
+
+    if(receive > 0){
+      strcpy(container_name, client_petition + 2);
+      printf("Comando: %s", client_petition);
+
+      // Realizamos la accion dependiendo de la peticion del cliente
+      if(client_petition[1] == 'c'){
+        if(num_containers < MAX_CONT){
+          puts(client_petition);
+
+          // Seccion crítica
+          pthread_mutex_lock(&mutex_server_response);
+          server_response = create_container(container_name);
+          pthread_mutex_unlock(&mutex_server_response);
+
+          strcpy(contenedores[num_containers].name, client_petition + 2);
+          num_containers++;
+        }else{
+          printf("Error: Maximo numero de contenedores creados\n");
+        }
+      }else if(client_petition[1] == 'l'){
+        puts(client_petition);
+
+        // Seccion crítica
+        pthread_mutex_lock(&mutex_server_response);
+        server_response = list_containers();
+        pthread_mutex_unlock(&mutex_server_response);
+      }else if(client_petition[1] == 's'){
+        puts(client_petition);
+
+        // Seccion crítica
+        pthread_mutex_lock(&mutex_server_response);
+        server_response = stop_container(container_name);
+        pthread_mutex_unlock(&mutex_server_response);
+      }else if(client_petition[1] == 'd'){
+        puts(client_petition);
+
+        // Seccion crítica
+        pthread_mutex_lock(&mutex_server_response);
+        server_response = delete_container(container_name);
+        pthread_mutex_unlock(&mutex_server_response);
+      }
+
+      printf("\nServer response: %s\n", server_response);
+      send(conn_client_sock, server_response, 512, 0);
+    }else{
+      c_a = sizeof(struct sockaddr_in);
+
+      pthread_exit(0);    /* used to terminate a thread */
+
+      // active_connection = 0;
+    }
+  }
+
+  pthread_exit(0);    /* used to terminate a thread */
+}
+
 void admin_container(){
-	int socket_desc, client_sock, c, read_size;
-	struct sockaddr_in server, client;
-	char client_petition[512], container_name[512];
-  char* server_response;
+	int listen_connections = 1;
+  long client_sock_a;
 
-	int active_connection = 0;
+  pthread_t tid;  /* the thread identifier */
 
-	socket_desc = socket(AF_INET, SOCK_STREAM, 0);
+	socket_desc_a = socket(AF_INET, SOCK_STREAM, 0);
 
-	if(socket_desc == -1){
+	if(socket_desc_a == -1){
 		printf("Error al inicializar el servicio admin_container");
 	}
 
 	puts("admin_container iniciado");
 
-	server.sin_family = AF_INET;
-	server.sin_addr.s_addr = INADDR_ANY;
-	server.sin_port = htons(476);
+	server_a.sin_family = AF_INET;
+	server_a.sin_addr.s_addr = INADDR_ANY;
+	server_a.sin_port = htons(476);
 
-	if(bind(socket_desc, (struct sockaddr *)&server, sizeof(server)) < 0){
+	if(bind(socket_desc_a, (struct sockaddr *)&server_a, sizeof(server_a)) < 0){
 		perror("Error al crear el socket");
 		return;
 	}
 
 	puts("Socket iniciado");
 
-	listen(socket_desc, 10);
+	listen(socket_desc_a, 100);
 
 	puts("Esperando por conexiones entrantes...");
-	c = sizeof(struct sockaddr_in);
+	c_a = sizeof(struct sockaddr_in);
 
-	client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c);
+  client_sock_a = accept(socket_desc_a, (struct sockaddr *)&client_a, (socklen_t*)&c_a);
 
-	if(client_sock < 0){
-		perror("Error al establecer la conexion");
-		return;
-	}
+  // While para aceptar multiples conexiones
+  while(listen_connections){
+    if(client_sock_a < 0){
+      printf("Error al establecer la conexion\n");
+    }else{
+    	pthread_create(&tid, NULL, new_connection, (void *)client_sock_a);   /* create the thread */
+    }
 
-	active_connection = 1;
-	puts("\nConexion establecida a admin_container\n");
-
-	while(active_connection){
-		memset(client_petition, 0, 512);
-
-		if(recv(client_sock, client_petition, 512, 0) > 0){
-      strcpy(container_name, client_petition + 2);
-
-			// Realizamos la accion dependiendo de la peticion del cliente
-			if(client_petition[1] == 'c'){
-        if(num_containers < MAX_CONT){
-  				puts(client_petition);
-  				server_response = create_container(container_name);
-          strcpy(contenedores[num_containers].name, client_petition + 2);
-          num_containers++;
-        }else{
-          printf("Error: Maximo numero de contenedores creados\n");
-        }
-			}else if(client_petition[1] == 'l'){
-				puts(client_petition);
-				server_response = list_containers();
-			}else if(client_petition[1] == 's'){
-				puts(client_petition);
-				server_response = stop_container(container_name);
-			}else if(client_petition[1] == 'd'){
-				puts(client_petition);
-				server_response = delete_container(container_name);
-			}
-
-      printf("\nServer response: %s\n", server_response);
-			send(client_sock, server_response, 512, 0);
-		}else{
-    	c = sizeof(struct sockaddr_in);
-
-    	client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c);
-
-			// active_connection = 0;
-		}
-	}
+    client_sock_a = accept(socket_desc_a, (struct sockaddr *)&client_a, (socklen_t*)&c_a);
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -438,8 +529,10 @@ int main(int argc, char *argv[]) {
 		prctl(PR_SET_PDEATHSIG, SIGHUP); // SIGHUP: colgar la señal
 																		 // PR_SET_PDEATHSIG: cuando el padre muera
 
+    sem_init(&mutex_shared_memory, 0, 1);      /* initialize mutex to 1 - binary semaphore */
 		suscribe_host();
-	}
+    sem_destroy(&mutex_shared_memory);         /* destroy semaphore */
+  }
 
 	return 0;
 }

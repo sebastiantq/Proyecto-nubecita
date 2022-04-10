@@ -47,7 +47,7 @@ def display_menu():
 
             print("Actualmente se encuentran disponibles los contenedores: " + nubecita.list_containers(sock) + "\n")
         elif petition == 3:
-            print("\nIngresa el id del contenedor a detener: ", end = "")
+            print("\nIngresa el nombre del contenedor a detener: ", end = "")
             id = input()
 
             print("\nDeteniendo contenedor " + id + "...\n")
@@ -57,7 +57,7 @@ def display_menu():
             else:
                 print("Ha habido un error al detener el contenedor " + id + "\n")
         elif petition == 4:
-            print("\nIngresa el id del contenedor a borrar: ", end = "")
+            print("\nIngresa el nombre del contenedor a borrar: ", end = "")
             id = input()
 
             print("\nBorrando contenedor " + id + "...\n")

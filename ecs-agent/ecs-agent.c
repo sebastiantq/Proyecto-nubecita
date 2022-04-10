@@ -15,12 +15,22 @@
 
 #include "../libraries/hostshare.h"
 
+// PThread
+#include <pthread.h>
+
 #ifndef SIZE
 #define SIZE 512
 #endif
 
 char* ip = "127.0.0.1";
-int port = 478;
+int port = 479;
+
+// Variables compartidas admin_container y new_connection para pthreads
+int socket_desc, c, read_size;
+struct sockaddr_in server, client;
+char client_petition[512], container_name[512], server_response;
+
+void *new_petition(void *ptr);
 
 void awake(){
   char* suscribe_host_ip = "127.0.0.1";
@@ -160,14 +170,58 @@ int delete_container(char* name){
   return 1;
 }
 
+void *new_petition(void *ptr){
+  int active_connection = 1;
+  long conn_client_sock = (long) ptr;
+	puts("\nConexion establecida a host1\n");
+
+	while(active_connection){
+		// memset(client_petition, 0, 512);
+
+		if(recv(conn_client_sock, client_petition, 512, 0) > 0){
+      puts(client_petition);
+      strcpy(container_name, client_petition + 2);
+
+			// Realizamos la accion dependiendo de la peticion del cliente
+			if(client_petition[1] == 'c'){
+  			printf("\n");
+				server_response = create_container(container_name);
+			}else if(client_petition[1] == 's'){
+  			printf("\n");
+				server_response = stop_container(container_name);
+			}else if(client_petition[1] == 'd'){
+  			printf("\n");
+				server_response = delete_container(container_name);
+			}else{
+        server_response = 0;
+      }
+
+      if(server_response){
+        printf("\nCorrecto\n");
+      }else{
+        printf("\nError\n\n");
+      }
+
+			send(conn_client_sock, &client_petition, strlen(client_petition), 0);
+		}else{
+    	c = sizeof(struct sockaddr_in);
+
+      pthread_exit(0);    /* used to terminate a thread */
+
+    	// client_sock = accept(socket_desc, (struct sockaddr*)&client, (socklen_t*) & c);
+
+			// active_connection = 0;
+		}
+	}
+
+  pthread_exit(0);    /* used to terminate a thread */
+}
+
 void listen_admin_container(){
-  int socket_desc, client_sock, c, read_size;
-	struct sockaddr_in server, client;
-	char client_petition[512], server_response;
+  pthread_t tid;  /* the thread identifier */
 
-	int active_connection = 0;
-
-  char container_name[512];
+	int listen_connections = 1;
+  long client_sock;
 
 	socket_desc = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -193,52 +247,18 @@ void listen_admin_container(){
 	puts("Esperando por conexiones entrantes...");
 	c = sizeof(struct sockaddr_in);
 
-	client_sock = accept(socket_desc, (struct sockaddr*)&client, (socklen_t*) & c);
+  client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c);
 
-	if(client_sock < 0){
-		perror("Error al establecer la conexion");
-		return;
-	}
+  // While para aceptar multiples conexiones
+  while(listen_connections){
+    if(client_sock < 0){
+      printf("Error al establecer la conexion\n");
+    }else{
+      pthread_create(&tid, NULL, new_petition, (void *)client_sock);   /* create the thread */
+    }
 
-	active_connection = 1;
-	puts("\nConexion establecida a host1\n");
-
-	while(active_connection){
-		// memset(client_petition, 0, 512);
-
-		if(recv(client_sock, client_petition, 512, 0) > 0){
-      puts(client_petition);
-      strcpy(container_name, client_petition + 2);
-
-			// Realizamos la accion dependiendo de la peticion del cliente
-			if(client_petition[1] == 'c'){
-  			printf("\n");
-				server_response = create_container(container_name);
-			}else if(client_petition[1] == 's'){
-  			printf("\n");
-				server_response = stop_container(container_name);
-			}else if(client_petition[1] == 'd'){
-  			printf("\n");
-				server_response = delete_container(container_name);
-			}else{
-        server_response = 0;
-      }
-
-      if(server_response){
-        printf("\nCorrecto\n");
-      }else{
-        printf("\nError\n\n");
-      }
-
-			send(client_sock, &client_petition, strlen(client_petition), 0);
-		}else{
-    	c = sizeof(struct sockaddr_in);
-
-    	client_sock = accept(socket_desc, (struct sockaddr*)&client, (socklen_t*) & c);
-
-			// active_connection = 0;
-		}
-	}
+    client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c);
+  }
 }
 
 int main(int argc, char *argv[]) {
