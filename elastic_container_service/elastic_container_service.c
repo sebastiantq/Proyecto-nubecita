@@ -297,15 +297,23 @@ void suscribe_host(){
 char* create_container(char* name){
 	char command[512];
   char* response;
+  char priority[100];
   host* available_hosts;
   int min_containers = 0;
 
   available_hosts = receive_hosts();
 
   strcpy(command, "-c");
-  strcat(command, name);
 
-  min_containers = rand() % 2;
+  sprintf(priority, "%d", rand() % (5 + 1 - 0) + 0); // Prioridad random entre 0 y 5
+  printf("Prioridad: %c\n", priority[1]);
+  strcat(priority, name);
+  strcat(command, priority);
+
+  // min_containers = rand() % 2;
+  // Escogemos siempre el primer host dado que solo vamos a trabajar con uno
+  min_containers = 0;
+
 
   // Nos conectamos al host escogido e interactuamos con él
   int r_send = send_command(&available_hosts[min_containers], command);
@@ -341,13 +349,18 @@ char* list_containers(){
 char* stop_container(char* name){
   char* response;
   char command[512];
+  char priority[100];
   host* available_hosts;
   int cont_host = -1;
 
   available_hosts = receive_hosts();
 
   strcpy(command, "-s");
-  strcat(command, name);
+
+  sprintf(priority, "%d", rand() % (9 + 1 - 6) + 6); // Prioridad random entre 0 y 9
+  printf("Prioridad: %c\n", priority[1]);
+  strcat(priority, name);
+  strcat(command, priority);
 
   printf("Comparando NOMBRES STOP: \n");
   for (size_t i = 0; i < MAX_CONT; i++) {
@@ -375,13 +388,18 @@ char* stop_container(char* name){
 char* delete_container(char* name){
   char* response;
   char command[512];
+  char priority[100];
   host* available_hosts;
   int cont_host = -1;
 
   available_hosts = receive_hosts();
 
   strcpy(command, "-d");
-  strcat(command, name);
+
+  sprintf(priority, "%d", rand() % (9 + 1 - 6) + 6); // Prioridad random entre 0 y 9
+  printf("Prioridad: %c\n", priority[1]);
+  strcat(priority, name);
+  strcat(command, priority);
 
   printf("Comparando NOMBRES DELETE: \n");
   for (size_t i = 0; i < MAX_CONT; i++) {

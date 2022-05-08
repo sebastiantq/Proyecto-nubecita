@@ -25,6 +25,11 @@
 char* ip = "127.0.0.1";
 int port = 479;
 
+// Scheduler 1: 478
+// Host 1: 479
+// Scheduler 2: 480
+// Host 2: 481
+
 // Variables compartidas admin_container y new_connection para pthreads
 int socket_desc, c, read_size;
 struct sockaddr_in server, client;
@@ -180,7 +185,7 @@ void *new_petition(void *ptr){
 
 		if(recv(conn_client_sock, client_petition, 512, 0) > 0){
       puts(client_petition);
-      strcpy(container_name, client_petition + 2);
+      strcpy(container_name, client_petition + 3);
 
 			// Realizamos la accion dependiendo de la peticion del cliente
 			if(client_petition[1] == 'c'){
@@ -264,7 +269,7 @@ void listen_admin_container(){
 int main(int argc, char *argv[]) {
   printf("Host levantado\n");
 
-  awake();
+  // awake();
 
   printf("\nRecibiendo peticiones...\n");
 
